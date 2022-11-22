@@ -30,12 +30,15 @@
  */
 
 package com.mbientlab.metawear.metabase;
+import org.tensorflow.lite.Interpreter;
 
+import android.app.Activity;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.ServiceConnection;
+import android.content.res.AssetFileDescriptor;
 import android.graphics.Color;
 import android.media.MediaScannerConnection;
 import android.os.Binder;
@@ -44,8 +47,10 @@ import android.os.Handler;
 import android.os.IBinder;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+
 import com.google.android.material.textfield.TextInputLayout;
 import androidx.appcompat.app.AlertDialog;
+
 import android.util.Log;
 import android.util.Pair;
 import android.view.LayoutInflater;
@@ -64,9 +69,14 @@ import com.mbientlab.metawear.impl.JseMetaWearBoard;
 import com.mbientlab.metawear.module.Debug;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
+import java.io.IOException;
+import java.nio.MappedByteBuffer;
+import java.nio.channels.FileChannel;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Calendar;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -86,6 +96,7 @@ public class StreamMonitorFragment extends AppFragmentBase implements ServiceCon
         List<Pair<MetaBaseDevice, Map<SensorConfig, Route>>> devices;
         List<AppState.Session> sessions;
         String name;
+
     }
 
     public static class Service extends android.app.Service implements ServiceConnection {
@@ -106,6 +117,7 @@ public class StreamMonitorFragment extends AppFragmentBase implements ServiceCon
             Parameter parameter;
             List<MetaWearBoard> metawears;
             List<DataHandler> dataHandlers;
+
             AppState.Session session;
             long start;
             List<DataHandler.SampleCountDataHandler> streamMetrics;
@@ -117,6 +129,9 @@ public class StreamMonitorFragment extends AppFragmentBase implements ServiceCon
                 dataHandlers = new ArrayList<>();
                 streamMetrics = new ArrayList<>();
                 samples = new LinkedHashMap<>();
+
+
+
 
                 getApplicationContext().bindService(new Intent(Service.this, BtleService.class), Service.this, Context.BIND_AUTO_CREATE);
                 active = true;
@@ -297,7 +312,13 @@ public class StreamMonitorFragment extends AppFragmentBase implements ServiceCon
 
     @Override
     public void onServiceConnected(ComponentName name, IBinder service) {
+        ArrayList<Float> x = new ArrayList<>();
+        ArrayList<Float> y = new ArrayList<>();
+        ArrayList<Float> z = new ArrayList<>();
+        final List<List<Float>> inp_data = new ArrayList<>();
+
         binder = (Service.LocalBinder) service;
+
 
         Action3<MetaWearBoard, TextView, ImageView> dcHandler = (m, deviceName, alert) -> {
             owner.runOnUiThread(() -> {
@@ -369,6 +390,34 @@ public class StreamMonitorFragment extends AppFragmentBase implements ServiceCon
 
                         it2.getValue().resubscribe(0, (data, env) -> {
                             sampleCounter.process(data);
+                            System.out.println("array data: "+ data);
+                            System.out.println(Arrays.toString(data.value(float[].class)));
+
+                            x.add(data.value(float[].class)[0]);
+                            y.add(data.value(float[].class)[1]);
+                            z.add(data.value(float[].class)[2]);
+
+                            int N_SAMPLES = 3502+1;
+
+                            if(x.size() >= N_SAMPLES && y.size() >= N_SAMPLES && z.size() >= N_SAMPLES){
+                                inp_data.add(x.subList(1, N_SAMPLES));
+                                inp_data.add(y.subList(1, N_SAMPLES));
+                                inp_data.add(z.subList(1, N_SAMPLES));
+
+                                List<List<Float>> inp_data_t = transpose(inp_data);
+                                baseline model = new baseline();
+                                model.run_model(getContext(), inp_data_t);
+
+
+                                x.clear();
+                                y.clear();
+                                z.clear();
+
+                                //todo: clear i/p data array
+                                inp_data_t.clear();
+                                inp_data.clear();
+                            }
+
                             csvWriter.process(data);
                             sensorCount.process(data);
                         });
@@ -407,6 +456,24 @@ public class StreamMonitorFragment extends AppFragmentBase implements ServiceCon
             }
         }
     }
+
+    public static List<List<Float>> transpose(List<List<Float>> matrixIn) {
+        List<List<Float>> matrixOut = new ArrayList<>();
+        if (!matrixIn.isEmpty()) {
+            int noOfElementsInList = matrixIn.get(0).size();
+            for (int i = 0; i < noOfElementsInList; i++) {
+                List<Float> col = new ArrayList<Float>();
+                for (List<Float> row : matrixIn) {
+                    col.add(row.get(i));
+                }
+                matrixOut.add(col);
+            }
+        }
+
+        return matrixOut;
+    }
+
+
 
     @Override
     public void onServiceDisconnected(ComponentName name) {
